@@ -1,0 +1,45 @@
+[package]
+name = "sc-rank"
+version = "0.1.0"
+description = "SC Rank — 네이버 블로그·플레이스 키워드 순위 조회"
+edition = "2021"
+
+[lib]
+name = "sc_rank_lib"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-log = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+thiserror = "2"
+anyhow = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+futures = "0.3"
+regex = "1"
+scraper = "0.24"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
+rust_xlsxwriter = "0.90"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+url = "2"
+percent-encoding = "2"
+chromiumoxide = "0.9"
+# TLS 암호 제공자는 ring — Windows 빌드에 NASM 이 필요 없다(aws-lc-rs 를 쓰지 않는다).
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "gzip", "brotli", "deflate", "http2", "system-proxy"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
+
+[dev-dependencies]
+calamine = "0.30"
+zip = { version = "2", default-features = false, features = ["deflate"] }
