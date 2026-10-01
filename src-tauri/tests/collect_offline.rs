@@ -14,8 +14,8 @@ fn read(rel: &str) -> String {
 /// 페이지 안 JS 는 PoC 문자열 그대로 주입한다 (SPEC §4).
 #[test]
 fn 주입_js_는_poc_원문과_같다() {
-    assert_eq!(read("js/place-dom.js"), read("../../server/place-dom.mjs"));
-    let place = read("../../server/place.mjs");
+    assert_eq!(read("js/place-dom.js"), read("../poc/place-dom.mjs"));
+    let place = read("../poc/place.mjs");
     for f in [
         "js/place-items.js",
         "js/place-signature.js",
@@ -27,7 +27,7 @@ fn 주입_js_는_poc_원문과_같다() {
             "{f} 가 place.mjs 에 그대로 없다"
         );
     }
-    let blog = read("../../server/blog-browser.mjs");
+    let blog = read("../poc/blog-browser.mjs");
     for f in ["js/blog-scroll.js", "js/blog-rendered.js"] {
         let snippet = read(f);
         assert!(

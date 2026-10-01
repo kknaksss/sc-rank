@@ -1,8 +1,9 @@
 # SC Rank (데스크톱)
 
 네이버 **블로그 상위 노출**과 **플레이스 순위**를 조회해 엑셀로 저장하는 서버 없는 데스크톱 프로그램이다.
-운영 환경은 Windows 10/11 x64, 개발 환경은 macOS 다. 웹 PoC(`../server/`·`../src/`)를 Tauri 2 + Rust 로 옮겼다.
-계약은 SPEC-001(`para/projects/summer-star/sc-rank/20-spec/spec-001-desktop-app.md`)에 있다.
+운영 환경은 Windows 10/11 x64, 개발 환경은 macOS 다. 웹 PoC(kknaks_profile 레포 `reference/2026-09-09-sc-prototype/server/`·`src/`)를 Tauri 2 + Rust 로 옮겼다.
+계약은 SPEC-001(kknaks_profile 레포 `para/projects/summer-star/sc-rank/20-spec/spec-001-desktop-app.md`)에 있다.
+동일성 테스트가 읽는 PoC 원본 사본은 `poc/` 에 있다(`poc/README.md`).
 
 - 화면: PoC React 화면 그대로(`src/`). PoC 와 다른 곳은 `src/bridge.js` 연결과 `main.jsx` 의 호출·저장 자리뿐이다.
 - 조회: PC 에 설치된 **Microsoft Edge → Google Chrome** 을 헤드리스로 띄워 CDP 로 조종한다. Chromium 은 동봉하지 않는다.
@@ -24,7 +25,8 @@
 ### 명령
 
 ```bash
-cd reference/2026-09-09-sc-prototype/desktop
+git clone https://github.com/kknaksss/sc-rank.git
+cd sc-rank
 npm install                 # 처음 한 번
 npm run tauri dev           # 앱 실행 — vite 는 127.0.0.1:13100 (PoC 13000 과 동시 실행 가능)
 npm run build               # 화면 빌드만
@@ -63,6 +65,7 @@ TLS 암호 라이브러리(`ring`, rustls 의 제공자)가 MSVC 로 C 코드를
 | Visual Studio 2022 Build Tools | 17.x | [Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) 설치 시 **「C++를 사용한 데스크톱 개발」** 워크로드 선택. MSVC v143 과 Windows 10/11 SDK 가 함께 들어간다 |
 | Rust | stable 1.97 (최소 1.85), **MSVC 툴체인** | [rustup-init.exe](https://rustup.rs) → 기본값 `x86_64-pc-windows-msvc`. 확인: `rustup show` 의 default host 가 `x86_64-pc-windows-msvc` |
 | Node.js | 20 LTS | [nodejs.org](https://nodejs.org) Windows x64 설치 파일 |
+| Git | 최신 | [git-scm.com](https://git-scm.com/download/win) — 비공개 레포라 clone 할 때 GitHub 로그인이 필요하다 |
 | WebView2 Runtime | Evergreen | Windows 11 은 기본 설치. Windows 10 에 없으면 [WebView2](https://developer.microsoft.com/microsoft-edge/webview2/) 에서 Evergreen Bootstrapper. 설치 파일도 없을 때 부트스트래퍼를 내려받는다 |
 | Microsoft Edge | 기본 탑재 | 조회에 쓴다. Edge 가 없으면 Chrome |
 
@@ -72,12 +75,13 @@ TLS 암호 라이브러리(`ring`, rustls 의 제공자)가 MSVC 로 C 코드를
 ### 명령 (PowerShell 또는 명령 프롬프트)
 
 ```powershell
-cd reference\2026-09-09-sc-prototype\desktop
+git clone https://github.com/kknaksss/sc-rank.git
+cd sc-rank
 npm install
 npm run tauri build
 ```
 
-- 산출물: `desktop\src-tauri\target\release\bundle\nsis\SC Rank_0.1.0_x64-setup.exe`
+- 산출물: `src-tauri\target\release\bundle\nsis\SC Rank_0.1.0_x64-setup.exe`
 - 번들은 NSIS 하나만 만든다(`tauri.conf.json` 의 `bundle.targets = ["nsis"]`).
 - 빌드 확인용: `cd src-tauri` → `cargo test` · `cargo run --example smoke -- place 강남역성형외과 무이성형외과`
 
@@ -118,11 +122,12 @@ smoke 예제는 같은 로그를 표준 출력에 낸다.
 ## 5. 폴더
 
 ```
-desktop/
+sc-rank/
   index.html · src/        PoC 화면 사본 + src/bridge.js (invoke 연결 · 링크를 OS 브라우저로)
   src-tauri/
     src/                   commands · browser(CDP) · place · blog · blog_browser · workbook · gate · errors · js
     js/                    페이지 안에서 도는 PoC JS 원문(주입용)
     examples/smoke.rs      실수집 확인
     tests/                 단위 테스트 · fixtures/1.png
+  poc/                     PoC 원본 사본 — 주입 JS 동일성 검사용, 수정 금지
 ```
