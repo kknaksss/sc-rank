@@ -66,7 +66,6 @@ cargo run --example smoke -- blog 구월동피부과 image tests/fixtures/1.png
 
 릴리스 순서: `package.json` · `src-tauri/Cargo.toml` · `src-tauri/tauri.conf.json` 의 `version` 을 같은 값으로 올린다 → 커밋 → `git tag v0.1.1 && git push origin v0.1.1`.
 
-- 비공개 레포라 Windows 머신 실행 시간이 월 무료 한도에서 2배로 차감된다(빌드 1회 대략 10분 안팎 — 실측 전).
 - Artifacts 는 zip 으로 내려받아진다. 안의 `SC Rank_<버전>_x64-setup.exe` 를 쓴다.
 
 ### 대안: Windows PC 에서 직접
@@ -82,7 +81,7 @@ TLS 암호 라이브러리(`ring`, rustls 의 제공자)가 MSVC 로 C 코드를
 | Visual Studio 2022 Build Tools | 17.x | [Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) 설치 시 **「C++를 사용한 데스크톱 개발」** 워크로드 선택. MSVC v143 과 Windows 10/11 SDK 가 함께 들어간다 |
 | Rust | stable 1.97 (최소 1.85), **MSVC 툴체인** | [rustup-init.exe](https://rustup.rs) → 기본값 `x86_64-pc-windows-msvc`. 확인: `rustup show` 의 default host 가 `x86_64-pc-windows-msvc` |
 | Node.js | 20 LTS | [nodejs.org](https://nodejs.org) Windows x64 설치 파일 |
-| Git | 최신 | [git-scm.com](https://git-scm.com/download/win) — 비공개 레포라 clone 할 때 GitHub 로그인이 필요하다 |
+| Git | 최신 | [git-scm.com](https://git-scm.com/download/win) |
 | WebView2 Runtime | Evergreen | Windows 11 은 기본 설치. Windows 10 에 없으면 [WebView2](https://developer.microsoft.com/microsoft-edge/webview2/) 에서 Evergreen Bootstrapper. 설치 파일도 없을 때 부트스트래퍼를 내려받는다 |
 | Microsoft Edge | 기본 탑재 | 조회에 쓴다. Edge 가 없으면 Chrome |
 
