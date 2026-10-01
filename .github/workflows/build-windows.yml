@@ -1,0 +1,50 @@
+# Windows 설치 파일(NSIS)을 GitHub Actions 에서 만든다 — DEC-001 D-11(2026-10-01 개정).
+# - PR·수동 실행: Windows 에서 테스트 + 빌드, 설치 파일을 Actions 산출물로 올린다.
+# - v* 태그 push: 위와 같고, 설치 파일을 GitHub Release 에 붙인다.
+#   태그 전에 package.json · src-tauri/Cargo.toml · src-tauri/tauri.conf.json 의 version 을 맞춘다.
+name: windows-build
+
+on:
+  pull_request:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: npm ci
+
+      # Windows 전용 경로(cfg(windows))를 실제로 컴파일·실행하는 유일한 자리다.
+      - run: cargo test
+        working-directory: src-tauri
+
+      - run: npx tauri build
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: sc-rank-windows-setup
+          path: src-tauri/target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
+
+      - if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: src-tauri/target/release/bundle/nsis/*-setup.exe
