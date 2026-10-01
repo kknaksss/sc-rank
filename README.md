@@ -54,7 +54,24 @@ cargo run --example smoke -- blog 구월동피부과 image tests/fixtures/1.png
 
 ## 2. Windows 빌드 (설치 파일 만들기)
 
-**Windows PC 에서 직접 빌드한다.** macOS 에서는 Windows 설치 파일을 만들 수 없다.
+### 기본: GitHub Actions (`.github/workflows/build-windows.yml`)
+
+설치 파일은 **GitHub Actions 의 Windows 머신이 만든다**(DEC-001 D-11, 2026-10-01 개정). 로컬 Windows 도구가 필요 없다.
+
+| 언제 | 무엇이 생기나 | 받는 곳 |
+|---|---|---|
+| PR 을 열거나 push | Windows 에서 `cargo test` + 빌드, 설치 파일을 산출물로 | PR 의 Checks → `windows-build` → Artifacts `sc-rank-windows-setup` |
+| 수동 실행 (`main` 에 워크플로가 들어간 뒤) | 위와 같음 | Actions → `windows-build` → Run workflow → 실행 결과의 Artifacts |
+| `v*` 태그 push | 위 + **GitHub Release 에 설치 파일 첨부** | Releases |
+
+릴리스 순서: `package.json` · `src-tauri/Cargo.toml` · `src-tauri/tauri.conf.json` 의 `version` 을 같은 값으로 올린다 → 커밋 → `git tag v0.1.1 && git push origin v0.1.1`.
+
+- 비공개 레포라 Windows 머신 실행 시간이 월 무료 한도에서 2배로 차감된다(빌드 1회 대략 10분 안팎 — 실측 전).
+- Artifacts 는 zip 으로 내려받아진다. 안의 `SC Rank_<버전>_x64-setup.exe` 를 쓴다.
+
+### 대안: Windows PC 에서 직접
+
+Actions 를 못 쓸 때만. macOS 에서는 Windows 설치 파일을 만들 수 없다.
 TLS 암호 라이브러리(`ring`, rustls 의 제공자)가 MSVC 로 C 코드를 컴파일해야 하기 때문이다.
 어셈블리는 `ring` 이 미리 빌드된 객체를 싣고 있어 **NASM·CMake 는 필요 없다.**
 
