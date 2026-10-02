@@ -134,6 +134,7 @@ smoke 예제는 같은 로그를 표준 출력에 낸다.
 - 조회할 때만 헤드리스 브라우저를 하나 띄운다. 블로그·플레이스가 이 하나를 같이 쓰고, 끊기면 다음 조회에서 다시 띄운다.
 - 사용자 브라우저 프로필은 쓰지 않는다. 임시 폴더에 `sc-rank-cdp-*` 전용 프로필을 만든다.
 - 앱 창을 닫으면 브라우저를 끝내고 임시 프로필을 지운다. 강제 종료로 남은 `sc-rank-cdp-*` 는 다음 실행 때 지운다 — 이름의 pid 가 아직 살아 있는 것(다른 SC Rank 창·smoke 가 쓰는 중)은 남긴다.
+- **CDP 주소는 브라우저가 프로필에 쓰는 `DevToolsActivePort` 에서 읽고 거기에 붙는다.** 띄운 프로세스의 stderr 에서 읽지 않는다 — Windows 의 `msedge.exe`·`chrome.exe` 는 런처라서 브라우저 업데이트 도중이면 **실제 브라우저를 다른 프로세스로 넘기고 자신은 곧바로 exit 0 으로 끝낸다.** stderr 에 의존하면 그때마다 기동이 실패하고(`browser launch failed`) 넘겨받은 브라우저가 고아로 남는다. `tests/browser.rs` 가 `examples/fake_launcher.rs` 로 그 상황을 재현해 확인한다.
 
 ## 5. 폴더
 
@@ -144,6 +145,7 @@ sc-rank/
     src/                   commands · browser(CDP) · place · blog · blog_browser · workbook · gate · errors · js
     js/                    페이지 안에서 도는 PoC JS 원문(주입용)
     examples/smoke.rs      실수집 확인
+    examples/fake_launcher.rs  런처가 브라우저를 넘기고 먼저 끝나는 상황 재현(테스트용)
     tests/                 단위 테스트 · fixtures/1.png
   poc/                     PoC 원본 사본 — 주입 JS 동일성 검사용, 수정 금지
 ```
