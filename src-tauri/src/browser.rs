@@ -59,6 +59,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::anyhow;
+use chromiumoxide::async_process::Child;
 use chromiumoxide::cdp::browser_protocol::browser::BrowserContextId;
 use chromiumoxide::cdp::browser_protocol::emulation::{
     SetLocaleOverrideParams, SetUserAgentOverrideParams,
@@ -72,6 +73,7 @@ use chromiumoxide::cdp::js_protocol::runtime::{
     EvaluateParams, ExceptionDetails, ExecutionContextId,
 };
 use chromiumoxide::handler::viewport::Viewport;
+use chromiumoxide::handler::HandlerConfig;
 use chromiumoxide::{Browser, BrowserConfig, Page};
 use futures::StreamExt;
 use serde_json::Value;
@@ -82,8 +84,17 @@ pub const PROFILE_PREFIX: &str = "sc-rank-cdp-";
 /// 조회 단위 창 크기·언어 (SPEC §3, `place.mjs:59` · `blog-browser.mjs:8`).
 pub const VIEWPORT: (u32, u32) = (1400, 900);
 pub const LOCALE: &str = "ko-KR";
-/// Playwright `chromium.launch` 기본 기동 제한(180초).
+/// 기동 제한 — 브라우저가 CDP 주소를 적기까지 기다리는 한계.
+/// Playwright `chromium.launch` 기본값과 같은 180초.
 const LAUNCH_TIMEOUT: Duration = Duration::from_secs(180);
+/// 브라우저가 기동하면서 프로필에 쓰는 CDP 주소 파일 (1줄 포트 · 2줄 대상 경로).
+const PORT_FILE: &str = "DevToolsActivePort";
+/// 그 파일을 기다리는 폴링 간격.
+const PORT_POLL: Duration = Duration::from_millis(50);
+/// 기동한 프로세스가 끝난 뒤에도 주소 파일을 기다려 주는 시간.
+const PORT_GRACE_AFTER_EXIT: Duration = Duration::from_secs(10);
+/// 브라우저가 스스로 끝나기를 기다리는 한계(종료 · 프로필 잠금 해제).
+const CLOSE_TIMEOUT: Duration = Duration::from_secs(10);
 
 fn other(e: impl std::fmt::Display) -> ScrapeError {
     ScrapeError::other(anyhow!("{e}"))
@@ -154,8 +165,11 @@ fn pid_alive(pid: u32) -> bool {
 
 struct Running {
     browser: Browser,
+    /// 우리가 띄운 프로세스. Windows 에서는 이게 브라우저 본체가 아닐 수 있다(아래 `launch` 주석).
+    child: Child,
     alive: Arc<AtomicBool>,
     handler: JoinHandle<()>,
+    stderr: JoinHandle<()>,
     profile: PathBuf,
     user_agent: String,
 }
@@ -186,6 +200,19 @@ impl BrowserManager {
         }
     }
 
+    /// 헤드리스 브라우저를 띄우고 CDP 로 붙는다.
+    ///
+    /// `Browser::launch` 를 쓰지 않는다. 그쪽은 **띄운 자식의 stderr** 에서
+    /// `DevTools listening on ws://…` 줄을 읽어 접속 주소를 얻는데, Windows 의
+    /// `msedge.exe`·`chrome.exe` 는 런처라서 조건이 맞으면(브라우저 업데이트 도중,
+    /// 권한이 다른 부모에서 띄울 때) **실제 브라우저를 다른 프로세스로 넘기고 자신은
+    /// 곧바로 exit 0 으로 끝낸다.** 그러면 stderr 는 빈 채로 닫히고 chromiumoxide 는
+    /// `Browser process exited … before websocket URL could be resolved` 로 실패하는데,
+    /// 넘겨받은 브라우저는 살아서 고아로 남는다(조회마다 하나씩 쌓인다).
+    ///
+    /// 그래서 접속 주소는 stderr 가 아니라 **브라우저 본체가 프로필에 쓰는
+    /// `DevToolsActivePort`** 에서 읽고 `Browser::connect` 로 붙는다. 어느 프로세스가
+    /// 브라우저가 되었든 상관없고, 붙은 뒤에는 CDP `Browser.close` 로 확실히 끝낼 수 있다.
     async fn launch(&self) -> Result<Running> {
         let executable = find_browser(&self.candidates)?;
         let nanos = std::time::SystemTime::now()
@@ -194,29 +221,56 @@ impl BrowserManager {
             .unwrap_or_default();
         let profile =
             std::env::temp_dir().join(format!("{PROFILE_PREFIX}{}-{nanos}", std::process::id()));
+        let viewport = Viewport {
+            width: VIEWPORT.0,
+            height: VIEWPORT.1,
+            device_scale_factor: Some(1.0),
+            emulating_mobile: false,
+            is_landscape: false,
+            has_touch: false,
+        };
+        // 기동 인자는 chromiumoxide 가 만든 것을 그대로 쓴다(`--remote-debugging-port=0`
+        // 이므로 실제 포트는 브라우저가 `DevToolsActivePort` 에 적는다).
         let config = BrowserConfig::builder()
             .chrome_executable(&executable)
             .user_data_dir(&profile)
             .new_headless_mode()
             .window_size(VIEWPORT.0, VIEWPORT.1)
-            .viewport(Viewport {
-                width: VIEWPORT.0,
-                height: VIEWPORT.1,
-                device_scale_factor: Some(1.0),
-                emulating_mobile: false,
-                is_landscape: false,
-                has_touch: false,
-            })
-            .launch_timeout(LAUNCH_TIMEOUT)
+            .viewport(viewport.clone())
             .build()
             .map_err(other)?;
-        let (browser, mut handler) = match Browser::launch(config).await {
-            Ok(pair) => pair,
+        let mut child = match config.launch() {
+            Ok(child) => child,
             Err(e) => {
                 let _ = std::fs::remove_dir_all(&profile);
                 return Err(other(format!("browser launch failed: {e}")));
             }
         };
+        // stderr 는 파이프다 — 아무도 읽지 않으면 버퍼가 차서 브라우저가 멈춘다. 읽어서 로그로 보낸다.
+        let stderr = drain_stderr(&mut child);
+        let ws_url = match devtools_ws_url(&profile, &mut child).await {
+            Ok(url) => url,
+            Err(e) => {
+                stop_child(&mut child, Duration::ZERO).await;
+                stderr.abort();
+                remove_profile(&profile).await;
+                return Err(e);
+            }
+        };
+        let handler_config = HandlerConfig {
+            viewport: Some(viewport),
+            ..HandlerConfig::default()
+        };
+        let (browser, mut handler) =
+            match Browser::connect_with_config(&*ws_url, handler_config).await {
+                Ok(pair) => pair,
+                Err(e) => {
+                    stop_child(&mut child, Duration::ZERO).await;
+                    stderr.abort();
+                    remove_profile(&profile).await;
+                    return Err(other(format!("browser launch failed: {e}")));
+                }
+            };
         let alive = Arc::new(AtomicBool::new(true));
         let flag = alive.clone();
         let handler = tokio::spawn(async move {
@@ -230,8 +284,10 @@ impl BrowserManager {
         });
         let mut running = Running {
             browser,
+            child,
             alive,
             handler,
+            stderr,
             profile,
             user_agent: String::new(),
         };
@@ -253,9 +309,10 @@ impl BrowserManager {
     /// 격리 컨텍스트 + 페이지를 연다(`browser.newContext` + `newPage`). ko-KR · 1400×900 · UA 덮어쓰기.
     pub async fn open_context(&self) -> Result<Context> {
         let mut guard = self.running.lock().await;
+        // 끊긴 브라우저는 버리고 다시 띄운다. 판단은 CDP 연결 상태(`alive`)로 한다 —
+        // `connect` 로 붙었으므로 우리가 띄운 프로세스의 종료 여부는 브라우저의 생존과 다르다.
         if let Some(r) = guard.as_mut() {
-            let exited = matches!(r.browser.try_wait(), Ok(Some(_)));
-            if exited || !r.alive.load(Ordering::SeqCst) {
+            if !r.alive.load(Ordering::SeqCst) {
                 if let Some(dead) = guard.take() {
                     stop(dead).await;
                 }
@@ -324,29 +381,127 @@ impl BrowserManager {
     }
 }
 
+/// 브라우저를 끝내고 임시 프로필을 지운다.
+///
+/// 끝내는 길이 둘이다 — CDP `Browser.close` 는 **붙어 있는 브라우저 본체**를 닫고,
+/// `stop_child` 는 **우리가 띄운 프로세스**를 거둔다. Windows 에서 런처가 본체를 넘긴
+/// 경우 이 둘이 다른 프로세스이므로 모두 해야 한다.
 async fn stop(mut r: Running) {
-    let exited = matches!(r.browser.try_wait(), Ok(Some(_)));
-    if !exited {
-        let _ = tokio::time::timeout(Duration::from_secs(5), r.browser.close()).await;
-        if tokio::time::timeout(Duration::from_secs(5), r.browser.wait())
-            .await
-            .is_err()
-        {
-            let _ = r.browser.kill().await;
+    if r.alive.load(Ordering::SeqCst) {
+        let _ = tokio::time::timeout(CLOSE_TIMEOUT, r.browser.close()).await;
+        // CDP 연결이 끊기면 브라우저가 정말로 끝난 것이다. 넘겨받은 브라우저는 우리가
+        // 프로세스로 거둘 수 없으니(핸들이 없다) 이 신호를 기다린다 — 끝나기 전에 프로필을
+        // 지우려 하면 파일이 잠겨 있어 실패한다.
+        let deadline = Instant::now() + CLOSE_TIMEOUT;
+        while r.alive.load(Ordering::SeqCst) && Instant::now() < deadline {
+            tokio::time::sleep(PORT_POLL).await;
         }
     }
+    stop_child(&mut r.child, CLOSE_TIMEOUT).await;
     r.handler.abort();
-    // Windows 는 프로세스가 끝난 직후 파일 잠금이 잠깐 남는다.
-    for _ in 0..20 {
-        if std::fs::remove_dir_all(&r.profile).is_ok() || !r.profile.exists() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
+    r.stderr.abort();
+    remove_profile(&r.profile).await;
     log::info!(
         "[browser] {}",
         serde_json::json!({ "stage": "closed", "profileRemoved": !r.profile.exists() })
     );
+}
+
+/// 우리가 띄운 프로세스를 거둔다. 이미 끝났으면 거두기만 하고,
+/// 살아 있으면 `grace` 동안 스스로 끝나기를 기다린 뒤 강제로 끝낸다.
+async fn stop_child(child: &mut Child, grace: Duration) {
+    match child.try_wait() {
+        Ok(Some(_)) => return,
+        Err(e) => log::warn!("[browser] try_wait failed: {e}"),
+        Ok(None) => {}
+    }
+    if tokio::time::timeout(grace, child.wait()).await.is_err() {
+        let _ = child.kill().await;
+    }
+}
+
+/// 임시 프로필을 지운다. Windows 는 프로세스가 끝난 직후 파일 잠금이 잠깐 남는다.
+async fn remove_profile(profile: &Path) {
+    let deadline = Instant::now() + CLOSE_TIMEOUT;
+    loop {
+        if std::fs::remove_dir_all(profile).is_ok() || !profile.exists() {
+            return;
+        }
+        if Instant::now() >= deadline {
+            log::warn!(
+                "[browser] 임시 프로필을 지우지 못했다(다음 기동 때 지운다): {}",
+                profile.display()
+            );
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+/// 브라우저가 프로필에 적은 CDP 주소를 기다려 `ws://…` 로 만든다.
+///
+/// 파일은 두 줄이다 — 1줄 포트, 2줄 대상 경로(`/devtools/browser/<id>`). 쓰는 중에
+/// 읽을 수 있으므로 두 줄이 다 채워질 때까지 기다린다.
+///
+/// 띄운 프로세스가 먼저 끝나도 바로 실패로 보지 않는다(런처가 본체를 넘긴 경우가 그렇다).
+/// 다만 끝난 뒤로도 주소가 안 나오면 `PORT_GRACE_AFTER_EXIT` 만큼만 더 기다린다 —
+/// 정말로 브라우저가 못 뜬 경우에 `LAUNCH_TIMEOUT` 을 꽉 채우지 않기 위해서다.
+async fn devtools_ws_url(profile: &Path, child: &mut Child) -> Result<String> {
+    let path = profile.join(PORT_FILE);
+    let deadline = Instant::now() + LAUNCH_TIMEOUT;
+    let mut exited_at: Option<Instant> = None;
+    loop {
+        if let Some(url) = read_ws_url(&path) {
+            return Ok(url);
+        }
+        if exited_at.is_none() && matches!(child.try_wait(), Ok(Some(_))) {
+            exited_at = Some(Instant::now());
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return Err(other(format!(
+                "browser launch failed: Timeout {}ms exceeded waiting for {PORT_FILE}",
+                LAUNCH_TIMEOUT.as_millis()
+            )));
+        }
+        if exited_at.is_some_and(|at| now.duration_since(at) >= PORT_GRACE_AFTER_EXIT) {
+            return Err(other(format!(
+                "browser launch failed: browser process exited without writing {PORT_FILE}"
+            )));
+        }
+        tokio::time::sleep(PORT_POLL).await;
+    }
+}
+
+/// 주소 파일을 읽어 `ws://127.0.0.1:<포트><대상 경로>` 로 만든다. 아직 덜 쓰였으면 `None`.
+fn read_ws_url(path: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let mut lines = text.lines();
+    let port = lines.next()?.trim();
+    let target = lines.next()?.trim();
+    if port.is_empty() || !target.starts_with('/') {
+        return None;
+    }
+    port.parse::<u16>().ok()?;
+    Some(format!("ws://127.0.0.1:{port}{target}"))
+}
+
+/// stderr 를 끝까지 읽어 로그로 보낸다. 읽지 않으면 파이프가 차서 브라우저가 멈춘다.
+fn drain_stderr(child: &mut Child) -> JoinHandle<()> {
+    let Some(stderr) = child.stderr.take() else {
+        return tokio::spawn(async {});
+    };
+    tokio::spawn(async move {
+        use futures::AsyncBufReadExt;
+        let mut lines = futures::io::BufReader::new(stderr).lines();
+        while let Some(line) = lines.next().await {
+            match line {
+                Ok(line) if !line.trim().is_empty() => log::debug!("[browser] stderr: {line}"),
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
+    })
 }
 
 // ---- 페이지 조작 ----
@@ -481,5 +636,82 @@ fn page_error(details: &ExceptionDetails) -> ScrapeError {
         ScrapeError::domain(message)
     } else {
         other(format!("page.evaluate: {description}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{read_ws_url, PORT_FILE};
+
+    fn write(name: &str, body: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("sc-rank-port-test-{}-{name}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(PORT_FILE);
+        std::fs::write(&path, body).unwrap();
+        path
+    }
+
+    /// 두 줄이 다 있으면 ws 주소가 된다.
+    #[test]
+    fn 포트와_대상으로_ws_주소를_만든다() {
+        let path = write(
+            "ok",
+            "59202
+/devtools/browser/96878e4b
+",
+        );
+        assert_eq!(
+            read_ws_url(&path).as_deref(),
+            Some("ws://127.0.0.1:59202/devtools/browser/96878e4b")
+        );
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    /// 쓰는 중이라 덜 찬 파일은 아직 주소가 아니다 — 다음 폴링에서 다시 본다.
+    #[test]
+    fn 덜_쓰인_파일은_주소가_아니다() {
+        for (name, body) in [
+            ("empty", ""),
+            ("port-only", "59202"),
+            (
+                "port-newline",
+                "59202
+",
+            ),
+            (
+                "blank-target",
+                "59202
+
+",
+            ),
+            (
+                "bad-port",
+                "nope
+/devtools/browser/x
+",
+            ),
+            (
+                "bad-target",
+                "59202
+devtools/browser/x
+",
+            ),
+        ] {
+            let path = write(name, body);
+            assert!(read_ws_url(&path).is_none(), "{name} 은 주소가 아니다");
+            std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+        }
+    }
+
+    /// 파일이 아직 없으면 주소가 아니다.
+    #[test]
+    fn 없는_파일은_주소가_아니다() {
+        let missing = std::env::temp_dir().join(format!(
+            "sc-rank-port-missing-{}/{}",
+            std::process::id(),
+            PORT_FILE
+        ));
+        assert!(read_ws_url(&missing).is_none());
     }
 }
